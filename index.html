@@ -208,6 +208,11 @@ body{
     content:''; position:absolute; top:7px; left:50%; width:36px; height:4px;
     border-radius:999px; background:var(--line); transform:translateX(-50%);
   }
+  /* Dieselben zwei Zustände (voll/peek) lassen sich zusätzlich zu den Klicks oben auch per
+     Wischgeste an der Kopfzeile erreichen (siehe Drag-Logik im Skript) - touch-action:none
+     verhindert, dass der Browser das vertikale Ziehen als Seiten-Scroll/Pull-to-refresh
+     missversteht und unsere pointermove-Events abbricht. */
+  .panel-head{touch-action:none; user-select:none;}
 }
 
 /* ---------- Setup-Hinweis (MapTiler-Key fehlt) ---------- */
@@ -7447,11 +7452,89 @@ function handleDismissClick(){
 }
 document.getElementById('panelClose').addEventListener('click', handleDismissClick);
 backdrop.addEventListener('click', handleDismissClick);
+const panelHead = document.querySelector('.panel-head');
+
+// ---------- Panel per Wischgeste zuklappen/wieder aufklappen (mobil) ----------
+// Zusätzlich zu den Klicks oben: dieselben zwei Zustände (voll/peek) lassen sich auch per
+// Wischen mit dem Finger erreichen. Das Ziehen beginnt an der Kopfzeile (dort sitzt auch der
+// kleine graue "Griff"-Balken aus dem CSS), damit das Scrollen in der Geschäfteliste darunter
+// unangetastet bleibt. Nur auf Mobil aktiv (siehe isMobilePanelLayout) - auf dem Desktop gibt
+// es keine passende Peek-CSS-Regel, dort würde Ziehen also sowieso nichts Sichtbares bewirken.
+const PANEL_PEEK_VISIBLE_PX = 92; // muss zum Wert in der CSS-Regel ".panel[data-state=peek]" passen
+let panelDragStartY = null;
+let panelDragBaseOffset = 0;
+let panelDragPointerId = null;
+// Erst wenn sich beim Ziehen eine echte Bewegung zeigt, wird der Zeiger "eingefangen"
+// (siehe onPanelDragMove) - nicht schon beim bloßen Antippen. Würde man sofort beim
+// Antippen einfangen, bekäme ein einfacher Klick auf den X-Button (der ja innerhalb der
+// Kopfzeile liegt) sein eigenes "click"-Ereignis nicht mehr richtig ausgeliefert, weil der
+// Browser mouseup/click dann auf die Kopfzeile statt auf den Button umleitet.
+let panelDragCaptured = false;
+// Nach einem echten Wisch (nicht nur einem Tippen) feuert der Browser am Ende trotzdem noch
+// ein ganz normales "click"-Ereignis auf der Kopfzeile (gilt v.a. bei Maus/Trackpad - bei
+// echten Touch-Wischgesten unterdrücken die meisten Browser das "click" zwar meist schon
+// selbst, aber eben nicht zuverlässig genug). Ohne dieses Flag würde der click-Handler weiter
+// unten den gerade per Wisch gesetzten Zustand sofort wieder zurücksetzen.
+let panelJustDragged = false;
+function getPanelPeekOffsetPx(){
+  return panel.getBoundingClientRect().height - PANEL_PEEK_VISIBLE_PX;
+}
+function onPanelDragStart(e){
+  if (!isMobilePanelLayout() || panel.dataset.open !== 'true') return;
+  panelDragStartY = e.clientY;
+  panelDragBaseOffset = panel.dataset.state === 'peek' ? getPanelPeekOffsetPx() : 0;
+  panelDragPointerId = e.pointerId;
+  panelDragCaptured = false;
+}
+function onPanelDragMove(e){
+  if (panelDragStartY === null) return;
+  const movedBy = e.clientY - panelDragStartY;
+  if (!panelDragCaptured) {
+    // Unter 10px Bewegung gilt es noch nicht als Ziehen - nichts tun, damit ein einfacher
+    // Klick (z.B. aufs X) weiterhin ganz normal als "click" ankommt.
+    if (Math.abs(movedBy) < 10) return;
+    panelDragCaptured = true;
+    panel.style.transition = 'none'; // ab jetzt während des Ziehens live folgen
+    if (panelHead.setPointerCapture) panelHead.setPointerCapture(panelDragPointerId);
+  }
+  const peekOffset = getPanelPeekOffsetPx();
+  const next = Math.max(0, Math.min(peekOffset, panelDragBaseOffset + movedBy));
+  panel.style.transform = `translateY(${next}px)`;
+}
+function onPanelDragEnd(e){
+  if (panelDragStartY === null) return;
+  const movedBy = e.clientY - panelDragStartY;
+  panelDragStartY = null;
+  // War nie eine echte Zugbewegung (siehe onPanelDragMove) -> war nur ein Tippen, das der
+  // separate click-Handler weiter unten übernimmt. panel.style wurde dann auch nie verändert.
+  if (!panelDragCaptured) return;
+  panel.style.transition = ''; // Transition für die einrastende Animation wieder aktivieren
+  panel.style.transform = '';  // zurück auf die CSS-Klassen-gesteuerte Transform-Regel
+  panelDragCaptured = false;
+  panelJustDragged = true;
+  // Ein fester Schwellwert (statt "mehr als die Hälfte der Strecke") fühlt sich unabhängig
+  // von der Bildschirmhöhe gleich an: deutlich nach unten gewischt (>70px) -> weggewischt
+  // (peek); deutlich nach oben gewischt (>70px) -> wieder hochgewischt (voll); dazwischen
+  // schnappt es in den Ausgangszustand zurück, aus dem die Geste gestartet ist.
+  const SWIPE_SNAP_PX = 70;
+  if (panelDragBaseOffset === 0 && movedBy > SWIPE_SNAP_PX) peekPanel();
+  else if (panelDragBaseOffset > 0 && movedBy < -SWIPE_SNAP_PX) expandPanel();
+  else if (panelDragBaseOffset === 0) expandPanel();
+  else peekPanel();
+}
+panelHead.addEventListener('pointerdown', onPanelDragStart);
+panelHead.addEventListener('pointermove', onPanelDragMove);
+panelHead.addEventListener('pointerup', onPanelDragEnd);
+panelHead.addEventListener('pointercancel', onPanelDragEnd);
+
 // Auf die (beim Peeken sichtbare) Kopfzeile tippen klappt das Panel wieder ganz auf -
-// außer der Klick trifft direkt den X-Button, der hat oben schon seine eigene Aktion ausgelöst.
-document.querySelector('.panel-head').addEventListener('click', (e) => {
+// außer der Klick trifft direkt den X-Button (eigene Aktion oben) oder kommt direkt im
+// Anschluss an einen echten Wisch (siehe panelJustDragged weiter oben).
+panelHead.addEventListener('click', (e) => {
+  if (panelJustDragged) { panelJustDragged = false; return; }
   if (panel.dataset.state === "peek" && e.target.id !== 'panelClose') expandPanel();
 });
+
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closePanel(); closeLightbox(); } });
 
 // ---------- Gebäudefotos: Lightbox ----------
