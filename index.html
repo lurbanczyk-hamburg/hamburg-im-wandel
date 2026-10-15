@@ -198,6 +198,16 @@ body{
 @media (max-width:640px){
   .panel{width:100%; top:auto; bottom:0; height:min(85vh,680px); border-left:none; border-top:1px solid var(--line); border-radius:16px 16px 0 0; transform:translateY(100%);}
   .panel[data-open="true"]{transform:translateY(0);}
+  /* Zwischenstufe beim Wegklicken: Panel rutscht beim ersten Mal nur bis auf eine schmale,
+     antippbare Kopfzeile herunter statt sofort ganz vom Bildschirm zu verschwinden - siehe
+     peekPanel()/expandPanel()/closePanel() im Skript weiter unten. Erst ein zweiter,
+     bewusster Klick (erneut aufs X, auf die Karte, oder der Hintergrund) schließt endgültig. */
+  .panel[data-open="true"][data-state="peek"]{transform:translateY(calc(100% - 92px));}
+  .panel[data-open="true"][data-state="peek"] .panel-head{cursor:pointer;}
+  .panel-head::before{
+    content:''; position:absolute; top:7px; left:50%; width:36px; height:4px;
+    border-radius:999px; background:var(--line); transform:translateX(-50%);
+  }
 }
 
 /* ---------- Setup-Hinweis (MapTiler-Key fehlt) ---------- */
@@ -226,7 +236,7 @@ body{
 
 <div class="topbar">
   <div class="searchwrap">
-    <input id="search" type="text" placeholder="🔍 Geschäft oder Adresse suchen · Mö & Spitalerstraße" autocomplete="off">
+    <input id="search" type="text" placeholder="🔍 Geschäft oder Adresse suchen · Hamburg City" autocomplete="off">
     <div id="results"></div>
   </div>
 </div>
@@ -7212,13 +7222,18 @@ try {
       // Zeitleiste automatisch schließen, sobald irgendwo auf die Karte geklickt wird -
       // auch dann, wenn der Klick zusätzlich einen Gebäude-/Ereignis-Marker trifft (deren
       // eigene click-Handler oben feuern unabhängig davon trotzdem noch ganz normal).
-      // timelinePanelEl/stopTimelinePlay sind zu diesem Zeitpunkt bereits definiert, da
-      // 'load' erst asynchron feuert, nachdem das Skript einmal komplett durchlaufen ist
-      // (siehe Kommentar weiter oben bei _timelineSliderEl).
+      // Gleiches für ein bereits "weggeklicktes" (nur noch als Kopfzeile sichtbares)
+      // Infofenster - ein Klick auf die Karte schließt es dann endgültig.
+      // timelinePanelEl/stopTimelinePlay/panel/closePanel sind zu diesem Zeitpunkt bereits
+      // definiert, da 'load' erst asynchron feuert, nachdem das Skript einmal komplett
+      // durchlaufen ist (siehe Kommentar weiter oben bei _timelineSliderEl).
       map.on('click', () => {
         if (timelinePanelEl.dataset.open === 'true') {
           timelinePanelEl.dataset.open = 'false';
           stopTimelinePlay();
+        }
+        if (panel.dataset.open === 'true' && panel.dataset.state === 'peek') {
+          closePanel();
         }
       });
     });
@@ -7398,16 +7413,45 @@ function openPanel(building, focusShopIdx){
   panelTitle.textContent = building.shops.length === 1 ? building.shops[0].name : (building.shops.length + ' Geschäfte in diesem Haus');
   panelSub.textContent = building.synthetic ? building.syntheticNote : '';
   panelBody.innerHTML = photoStripHtml(building) + building.shops.map((s, i) => shopCardHtml(s, i === focusShopIdx)).join('');
-  panel.dataset.open = "true"; panel.setAttribute('aria-hidden', 'false');
+  panel.dataset.open = "true"; panel.dataset.state = "full"; panel.setAttribute('aria-hidden', 'false');
+  backdrop.dataset.open = "true";
+}
+// Erster Klick zum Wegklicken (siehe handleDismissClick): Panel rutscht nur bis auf die
+// Kopfzeile herunter, bleibt aber sichtbar/antippbar, statt sofort ganz zu verschwinden.
+// Nur relevant auf dem Smartphone/in der installierten App (schmaler Bildschirm, Panel als
+// Bottom-Sheet) - dafür gibt es die passende CSS-Regel. Auf dem Desktop (breites, schmales
+// Seitenpanel, kein Vollbild-Gefühl) bliebe "peek" ohne eigene CSS-Regel optisch unverändert
+// offen stehen - deshalb schließt handleDismissClick() dort weiterhin sofort ganz.
+function isMobilePanelLayout(){
+  return window.matchMedia('(max-width: 640px)').matches;
+}
+function peekPanel(){
+  panel.dataset.state = "peek";
+  backdrop.dataset.open = "false";
+}
+function expandPanel(){
+  panel.dataset.state = "full";
   backdrop.dataset.open = "true";
 }
 function closePanel(){
-  panel.dataset.open = "false"; panel.setAttribute('aria-hidden', 'true');
+  panel.dataset.open = "false"; panel.dataset.state = "full"; panel.setAttribute('aria-hidden', 'true');
   backdrop.dataset.open = "false";
   selectBuildingOnMap(null);
 }
-document.getElementById('panelClose').addEventListener('click', closePanel);
-backdrop.addEventListener('click', closePanel);
+// X-Button bzw. Hintergrund antippen: beim ersten Mal nur herunterrutschen (peek) -
+// erst ein zweites Mal, wenn schon im Peek-Zustand, schließt wirklich ganz.
+function handleDismissClick(){
+  if (!isMobilePanelLayout()) { closePanel(); return; }
+  if (panel.dataset.state === "peek") closePanel();
+  else peekPanel();
+}
+document.getElementById('panelClose').addEventListener('click', handleDismissClick);
+backdrop.addEventListener('click', handleDismissClick);
+// Auf die (beim Peeken sichtbare) Kopfzeile tippen klappt das Panel wieder ganz auf -
+// außer der Klick trifft direkt den X-Button, der hat oben schon seine eigene Aktion ausgelöst.
+document.querySelector('.panel-head').addEventListener('click', (e) => {
+  if (panel.dataset.state === "peek" && e.target.id !== 'panelClose') expandPanel();
+});
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closePanel(); closeLightbox(); } });
 
 // ---------- Gebäudefotos: Lightbox ----------
